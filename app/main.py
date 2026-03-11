@@ -14,7 +14,7 @@ from .locks import MemoryLockManager, RedisLockManager
 from .schemas import ApprovalCreateRequest, ApprovalResponse, ExecutionUpdateRequest
 from .services.approval_service import ApprovalService
 from .services.slack_service import SlackService
-from .slack_app import build_slack_handler
+from .slack_app import build_slack_app, build_slack_handler, build_socket_mode_handler
 
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,10 @@ async def _run_expiration_sweeper(app: FastAPI, stop_event: asyncio.Event) -> No
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    if settings.has_placeholder_signing_secret:
+    if settings.socket_mode_enabled and not settings.has_socket_mode_token:
+        raise RuntimeError("SLACK_APP_TOKEN is required when SLACK_USE_SOCKET_MODE=true")
+
+    if not settings.socket_mode_enabled and settings.has_placeholder_signing_secret:
         logger.warning(
             "SLACK_SIGNING_SECRET is not configured with a real value. "
             "Posting messages will work, but Slack button callbacks will fail verification."
@@ -67,11 +70,23 @@ async def lifespan(app: FastAPI):
     app.state.approval_service = approval_service
     app.state.stop_event = asyncio.Event()
     app.state.sweeper_task = asyncio.create_task(_run_expiration_sweeper(app, app.state.stop_event))
-    app.state.slack_handler = build_slack_handler(
+    app.state.slack_app = build_slack_app(
         bot_token=settings.slack_bot_token,
         signing_secret=settings.slack_signing_secret,
         approval_service=approval_service,
+        socket_mode=settings.socket_mode_enabled,
     )
+    app.state.slack_handler = None
+    app.state.socket_mode_handler = None
+    if settings.socket_mode_enabled:
+        app.state.socket_mode_handler = build_socket_mode_handler(
+            slack_app=app.state.slack_app,
+            app_token=settings.slack_app_token,
+        )
+        await app.state.socket_mode_handler.connect_async()
+        logger.info("Slack Socket Mode connected")
+    else:
+        app.state.slack_handler = build_slack_handler(slack_app=app.state.slack_app)
 
     yield
 
@@ -81,6 +96,8 @@ async def lifespan(app: FastAPI):
         await app.state.sweeper_task
     except asyncio.CancelledError:
         pass
+    if app.state.socket_mode_handler is not None:
+        await app.state.socket_mode_handler.close_async()
     if redis is not None:
         await redis.aclose()
     await database.close()
@@ -92,6 +109,14 @@ app = FastAPI(title="Codex Slack Approvals", lifespan=lifespan)
 def _check_internal_token(x_internal_token: str) -> None:
     if x_internal_token != settings.internal_api_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid internal token")
+
+
+def _require_http_slack_handler() -> None:
+    if app.state.slack_handler is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Slack HTTP callbacks are disabled while Socket Mode is enabled",
+        )
 
 
 @app.get("/healthz")
@@ -143,9 +168,11 @@ async def update_execution_status(
 
 @app.post("/slack/events")
 async def slack_events(request: Request) -> Response:
+    _require_http_slack_handler()
     return await app.state.slack_handler.handle(request)
 
 
 @app.post("/slack/interactions")
 async def slack_interactions(request: Request) -> Response:
+    _require_http_slack_handler()
     return await app.state.slack_handler.handle(request)

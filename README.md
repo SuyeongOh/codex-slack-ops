@@ -4,6 +4,29 @@ Self-hosted Slack approval workflow for Codex side-effecting shell operations.
 
 `FastAPI + Slack Bolt + Postgres + Redis` 기반의 승인 오케스트레이터입니다. Codex 또는 별도 실행기가 제안한 명령을 즉시 실행하지 않고, Slack 버튼 승인 후에만 진행하도록 앞단에서 제어합니다.
 
+## Recommended Setup
+
+현재 권장 운영 형태는 아래 조합입니다.
+
+- git-managed checkout 하나만 runtime으로 사용
+- `~/bin`에는 repo `bin/`을 symlink
+- Slack ingress는 `Socket Mode`
+- local/internal API는 `http://127.0.0.1:8000`
+- public HTTPS callback URL이나 temporary tunnel은 사용하지 않음
+
+이 구성이면 무료로 고정 domain 없이 운영할 수 있고, runtime source of truth도 repo 하나로 유지됩니다.
+
+## Runtime Layout
+
+기본 single source of truth는 git-managed checkout입니다. 이 문서에서 `<approval-app-dir>`는 기본적으로 `/home/<user>/codex-slack-ops` 같은 repo root를 의미합니다.
+
+- Primary runtime: git checkout (`/home/<user>/codex-slack-ops`)
+- Migration fallback only: copied working dir (`/home/<user>/codex-slack-approvals`)
+
+`bin/codex-slack`와 `bin/codex-slack-service`는 기본적으로 git checkout을 먼저 찾고, 없을 때만 migration fallback을 사용합니다. 두 디렉터리를 같은 host에서 동시에 active runtime으로 두지 않는 것을 권장합니다.
+
+권장 install 방식은 `~/bin`에 repo `bin/`을 symlink하는 것입니다. symlink install이면 wrapper/service script도 git checkout과 같이 업데이트됩니다.
+
 ## 구성 요소
 
 - `FastAPI`: 내부 승인 API, 상태 조회, Slack 요청 진입점
@@ -17,6 +40,7 @@ Self-hosted Slack approval workflow for Codex side-effecting shell operations.
 이 저장소를 다른 서버나 다른 Slack workspace로 옮길 때는 아래 값을 직접 채워야 합니다.
 
 - `SLACK_BOT_TOKEN=<xoxb-your-bot-token>`
+- `SLACK_APP_TOKEN=<xapp-your-app-token>` Socket Mode 사용 시
 - `SLACK_SIGNING_SECRET=<your-slack-signing-secret>`
 - `SLACK_TEAM_ID=<your-slack-team-id>`
 - `SLACK_ALLOWED_APPROVER_IDS=<comma-separated-slack-user-ids>`
@@ -45,11 +69,14 @@ python scripts/bootstrap_codex_slack_env.py
 
 - `~/.codex/config.toml`의 `SLACK_BOT_TOKEN`
 - `~/.codex/config.toml`의 `SLACK_TEAM_ID`
+- output `.env` 위치 기준 absolute `DATABASE_URL`
+- `SLACK_USE_SOCKET_MODE=false`
 - `INTERNAL_API_TOKEN`
 - 랜덤 `INTERNAL_API_TOKEN`
 
 직접 채워야 하는 값:
 
+- `SLACK_APP_TOKEN` Socket Mode 사용 시
 - `SLACK_SIGNING_SECRET`
 - `SLACK_DEFAULT_CHANNEL_ID`
 - `SLACK_ALLOWED_APPROVER_IDS`
@@ -58,7 +85,23 @@ Slack App 설정 화면의 `Basic Information > App Credentials`에서 `SLACK_SI
 
 다른 서버나 다른 Slack workspace로 옮길 때는 [`.env.template`](.env.template)를 복사해서 placeholder를 직접 채우는 방식이 더 적합합니다.
 
-## 2. 로컬 실행
+## 2. Slack Transport Modes
+
+이 서비스는 두 가지 Slack ingress 방식을 지원합니다.
+
+- Socket Mode 권장
+  - 무료로 고정 public HTTPS domain 없이 운영 가능
+  - `SLACK_USE_SOCKET_MODE=true`
+  - `SLACK_APP_TOKEN=xapp-...`
+  - Slack App에서 `Socket Mode` 활성화 및 app-level token(`connections:write`) 생성 필요
+  - `Interactivity & Shortcuts`의 Request URL이 필요하지 않음
+- HTTP callback mode
+  - public HTTPS host 필요
+  - `SLACK_USE_SOCKET_MODE=false`
+  - `SLACK_SIGNING_SECRET` 필요
+  - Slack App `Interactivity & Shortcuts` / `Event Subscriptions`에 Request URL 설정
+
+## 3. 로컬 실행
 
 기본 bootstrap은 `SQLite + in-memory lock` 조합으로 `.env`를 만들기 때문에 Docker 없이 바로 띄울 수 있습니다.
 
@@ -77,7 +120,17 @@ Docker를 쓰는 경우에는 `.env`의 `DATABASE_URL`, `REDIS_URL`만 Postgres/
 docker compose up --build
 ```
 
-## 3. Slack App 설정
+## 4. Slack App 설정
+
+Socket Mode 사용 시:
+
+- Slack App `Socket Mode`를 `On`
+- app-level token 생성
+  - scope: `connections:write`
+- `Interactivity & Shortcuts` Request URL 불필요
+- `Event Subscriptions`도 현재 approval flow에는 필수 아님
+
+HTTP callback mode 사용 시:
 
 - Interactivity Request URL: `https://<your-host>/slack/interactions`
 - Event Subscriptions Request URL: `https://<your-host>/slack/events`
@@ -89,9 +142,9 @@ docker compose up --build
 - `channels:history`
 - `groups:read` 필요 시
 
-현재 MCP bot token은 `users:read` 없이도 동작하도록 설계되어 있습니다. 승인자 검증은 버튼 payload의 `user.id`와 `SLACK_ALLOWED_APPROVER_IDS` 비교로 처리합니다.
+현재 MCP bot token은 `users:read` 없이도 동작하도록 설계되어 있습니다. 승인자 검증은 버튼 payload의 `user.id`와 `SLACK_ALLOWED_APPROVER_IDS` 비교로 처리합니다. Socket Mode에서는 Slack이 outbound WebSocket으로 payload를 전달하므로 public ingress가 필요 없습니다.
 
-## 4. 실제 명령 실행 runner
+## 5. 실제 명령 실행 runner
 
 서비스가 뜬 뒤에는 `scripts/approval_runner.py`를 바로 사용할 수 있습니다.
 
@@ -120,7 +173,7 @@ alias codex='codex-slack'
 alias codex-plain='/path/to/real/codex'
 ```
 
-이렇게 두면 기본 `codex`는 Slack approval workflow를 타고, 예외적으로만 `codex-plain`으로 built-in flow를 사용할 수 있습니다.
+이렇게 두면 기본 `codex`는 Slack approval workflow를 타고, 예외적으로만 `codex-plain`으로 built-in flow를 사용할 수 있습니다. wrapper default는 git checkout을 우선 사용하므로, repo를 최신으로 유지하면 runtime도 같은 기준으로 따라갑니다.
 
 ## 승인 API 예시
 
@@ -157,4 +210,4 @@ curl -X POST http://localhost:8000/api/v1/approvals \
 - 모든 상태 전이는 Postgres에서 조건부 업데이트로 처리합니다.
 - Redis가 없으면 `memory://` 기반 단일 프로세스 락으로 동작합니다.
 - 현재 버전은 `create_all()` 기반 초기화입니다. 운영 전환 시 Alembic migration 추가를 권장합니다.
-- `SLACK_SIGNING_SECRET`이 placeholder 상태면 Slack 버튼 클릭은 검증에 실패합니다.
+- HTTP callback mode에서 `SLACK_SIGNING_SECRET`이 placeholder 상태면 Slack 버튼 클릭은 검증에 실패합니다.

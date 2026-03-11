@@ -20,7 +20,9 @@ class Settings(BaseSettings):
     redis_url: str = Field(alias="REDIS_URL")
 
     slack_bot_token: str = Field(alias="SLACK_BOT_TOKEN")
+    slack_app_token: str = Field(default="", alias="SLACK_APP_TOKEN")
     slack_signing_secret: str = Field(alias="SLACK_SIGNING_SECRET")
+    slack_use_socket_mode: bool = Field(default=False, alias="SLACK_USE_SOCKET_MODE")
     slack_team_id: str = Field(default="", alias="SLACK_TEAM_ID")
     slack_allowed_approver_ids: str = Field(default="", alias="SLACK_ALLOWED_APPROVER_IDS")
     slack_default_channel_id: str = Field(default="", alias="SLACK_DEFAULT_CHANNEL_ID")
@@ -40,6 +42,14 @@ class Settings(BaseSettings):
     @property
     def has_placeholder_signing_secret(self) -> bool:
         return self.slack_signing_secret in {"replace-me", "REPLACE_WITH_SLACK_SIGNING_SECRET", ""}
+
+    @property
+    def socket_mode_enabled(self) -> bool:
+        return self.slack_use_socket_mode
+
+    @property
+    def has_socket_mode_token(self) -> bool:
+        return bool(self.slack_app_token.strip())
 
 
 @lru_cache

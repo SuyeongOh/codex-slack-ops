@@ -6,11 +6,12 @@
 
 - `<user>`: target server의 실제 Linux username
 - `<home>`: 보통 `/home/<user>`
-- `<approval-app-dir>`: 보통 `/home/<user>/codex-slack-approvals`
+- `<approval-app-dir>`: 기본 권장 `/home/<user>/codex-slack-ops`
 - `<bin-dir>`: 보통 `/home/<user>/bin`
 - `<codex-bin>`: target server에서 실제 `codex` binary path
 - `<public-host>`: Slack이 접근 가능한 public HTTPS host
 - `<bot-token>`: Slack Bot Token (`xoxb-...`)
+- `<app-token>`: Slack app-level token (`xapp-...`, Socket Mode용)
 - `<signing-secret>`: Slack Signing Secret
 - `<team-id>`: Slack workspace team id (`T...`)
 - `<approval-channel-id>`: approval message를 올릴 Slack channel id (`C...`)
@@ -22,6 +23,11 @@
 - side-effecting command는 Slack approval runner를 통해 승인
 - Slack에서 `Approve` / `Reject` 버튼 클릭
 - 승인 후 command 실행, thread status logging, parent message 상태 갱신
+
+운영 원칙:
+
+- 기본 runtime은 git-managed checkout 하나로 유지
+- legacy copied dir (`/home/<user>/codex-slack-approvals`)는 fallback 용도로만 남기고, active runtime과 병행 운영하지 않기
 
 ## 1. 구성 개요
 
@@ -90,7 +96,7 @@
   - 없어도 동작 가능
   - 기본 fallback은 `SQLite + memory lock`
 - public HTTPS endpoint
-  - Slack Interactivity 실제 버튼 클릭용
+  - HTTP callback mode에서만 필요
   - reverse proxy, ngrok, pinggy, cloudflared 등 가능
 
 ## 4. 프로젝트 설치
@@ -98,19 +104,16 @@
 target server 예시:
 
 ```bash
-mkdir -p /home/<user>
-cp -R codex-slack-approvals /home/<user>/codex-slack-approvals
+git clone <repo-url> /home/<user>/codex-slack-ops
 mkdir -p /home/<user>/bin
-cp codex-slack /home/<user>/bin/codex-slack
-cp codex-slack-service /home/<user>/bin/codex-slack-service
-chmod +x /home/<user>/bin/codex-slack
-chmod +x /home/<user>/bin/codex-slack-service
+ln -sf /home/<user>/codex-slack-ops/bin/codex-slack /home/<user>/bin/codex-slack
+ln -sf /home/<user>/codex-slack-ops/bin/codex-slack-service /home/<user>/bin/codex-slack-service
 ```
 
 venv 설치:
 
 ```bash
-cd /home/<user>/codex-slack-approvals
+cd /home/<user>/codex-slack-ops
 python -m venv .venv
 . .venv/bin/activate
 .venv/bin/python -m pip install --upgrade pip setuptools wheel
@@ -132,11 +135,13 @@ APP_PORT=8000
 BASE_URL=http://localhost:8000
 INTERNAL_API_TOKEN=replace-with-random-secret
 
-DATABASE_URL=sqlite+aiosqlite:///./approvals.db
+DATABASE_URL=sqlite+aiosqlite:////absolute/path/to/approvals.db
 REDIS_URL=memory://
 
 SLACK_BOT_TOKEN=<bot-token>
+SLACK_APP_TOKEN=
 SLACK_SIGNING_SECRET=<signing-secret>
+SLACK_USE_SOCKET_MODE=false
 SLACK_TEAM_ID=<team-id>
 SLACK_ALLOWED_APPROVER_IDS=<approver-user-ids>
 SLACK_DEFAULT_CHANNEL_ID=<approval-channel-id>
@@ -149,7 +154,9 @@ EXPIRATION_SWEEP_SECONDS=15
 권장:
 
 - 초기 배포는 `SQLite + memory://`로 먼저 올리기
+- SQLite를 계속 쓸 때도 `DATABASE_URL`은 absolute path로 고정하기
 - 운영 안정화 후 Postgres / Redis로 전환
+- fixed domain이 없고 무료 구성이 목표면 `SLACK_USE_SOCKET_MODE=true` + `SLACK_APP_TOKEN=<app-token>` 조합 권장
 
 ## 6. Slack App 설정
 
@@ -159,33 +166,44 @@ EXPIRATION_SWEEP_SECONDS=15
 - `channels:read`
 - `channels:history`
 - `groups:read` 필요 시
+- `connections:write` Socket Mode 사용 시 app-level token에 필요
 
-필수 설정:
+Socket Mode 권장 설정:
+
+- `Socket Mode`
+  - On
+- app-level token 생성
+  - scope: `connections:write`
+  - `.env`의 `SLACK_APP_TOKEN=<app-token>`
+- `.env`의 `SLACK_USE_SOCKET_MODE=true`
+- `Interactivity & Shortcuts`
+  - On
+  - Request URL 불필요
+- `Event Subscriptions`
+  - 현재 approval workflow만 쓰면 필수 아님
+
+HTTP callback mode 설정:
 
 - `Interactivity & Shortcuts`
   - On
   - Request URL:
     - `https://<public-host>/slack/interactions`
-
-선택 설정:
-
 - `Event Subscriptions`
-  - 현재 button workflow만 쓰면 필수 아님
-  - 나중에 `app_mention`, `reaction_added` 등을 붙일 때 사용
+  - 필요 시 On
   - Request URL:
     - `https://<public-host>/slack/events`
 
 주의:
 
-- Slack button은 반드시 public HTTPS callback URL이 필요함
-- `SLACK_SIGNING_SECRET` 없으면 button callback verification 실패
+- HTTP callback mode만 public HTTPS callback URL이 필요함
+- HTTP callback mode에서 `SLACK_SIGNING_SECRET` 없으면 verification 실패
 
 ## 7. Approval service 실행
 
 직접 실행:
 
 ```bash
-cd /home/<user>/codex-slack-approvals
+cd /home/<user>/codex-slack-ops
 . .venv/bin/activate
 uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
@@ -438,8 +456,8 @@ cat /tmp/probe_file.txt
 4. placeholder 치환
 5. `SLACK_SIGNING_SECRET` 확인
 6. `cslacksvc start`
-7. public HTTPS URL 연결
-8. Slack App `Interactivity` Request URL 저장
+7. Socket Mode 또는 public HTTPS URL 중 하나 선택
+8. Socket Mode면 `SLACK_APP_TOKEN`/`SLACK_USE_SOCKET_MODE` 설정, HTTP mode면 Slack App Request URL 저장
 9. test approval 생성
 10. 실제 button click
 11. target file 생성 확인

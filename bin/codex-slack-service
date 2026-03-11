@@ -1,7 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${CODEX_SLACK_APP_DIR:-$HOME/codex-slack-approvals}"
+resolve_script_path() {
+  local source="${BASH_SOURCE[0]}"
+  while [[ -L "${source}" ]]; do
+    local dir
+    dir="$(cd -P "$(dirname "${source}")" && pwd)"
+    source="$(readlink "${source}")"
+    if [[ "${source}" != /* ]]; then
+      source="${dir}/${source}"
+    fi
+  done
+  printf '%s\n' "$(cd -P "$(dirname "${source}")" && pwd)/$(basename "${source}")"
+}
+
+default_app_dir() {
+  local script_path script_dir repo_candidate candidate
+  script_path="$(resolve_script_path)"
+  script_dir="$(cd -P "$(dirname "${script_path}")" && pwd)"
+  repo_candidate="$(cd -P "${script_dir}/.." && pwd)"
+
+  if [[ -f "${repo_candidate}/pyproject.toml" && -f "${repo_candidate}/app/main.py" && -f "${repo_candidate}/scripts/approval_runner.py" ]]; then
+    printf '%s\n' "${repo_candidate}"
+    return 0
+  fi
+
+  for candidate in "$HOME/codex-slack-ops" "$HOME/codex-slack-approvals"; do
+    if [[ -f "${candidate}/pyproject.toml" && -f "${candidate}/app/main.py" && -f "${candidate}/scripts/approval_runner.py" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+  done
+
+  printf '%s\n' "$HOME/codex-slack-ops"
+}
+
+APP_DIR="${CODEX_SLACK_APP_DIR:-$(default_app_dir)}"
 ENV_FILE="${APP_DIR}/.env"
 PID_FILE="${APP_DIR}/.approval-service.pid"
 LOG_FILE="${APP_DIR}/approval-service.log"

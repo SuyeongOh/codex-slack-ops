@@ -1,16 +1,28 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from slack_bolt.adapter.fastapi.async_handler import AsyncSlackRequestHandler
+from slack_bolt.adapter.socket_mode.aiohttp import AsyncSocketModeHandler
 from slack_bolt.async_app import AsyncApp
 
 from .exceptions import ApprovalForbidden, ApprovalNotFound
 from .services.approval_service import ApprovalService
 
 
-def build_slack_handler(*, bot_token: str, signing_secret: str, approval_service: ApprovalService) -> AsyncSlackRequestHandler:
-    slack_app = AsyncApp(token=bot_token, signing_secret=signing_secret)
+def build_slack_app(
+    *,
+    bot_token: str,
+    signing_secret: str,
+    approval_service: ApprovalService,
+    socket_mode: bool = False,
+) -> AsyncApp:
+    slack_app = AsyncApp(
+        token=bot_token,
+        signing_secret=None if socket_mode else signing_secret,
+        request_verification_enabled=not socket_mode,
+    )
     logger = logging.getLogger(__name__)
 
     @slack_app.action("approve_request")
@@ -91,4 +103,16 @@ def build_slack_handler(*, bot_token: str, signing_secret: str, approval_service
             approval=approval,
         )
 
+    return slack_app
+
+
+def build_slack_handler(*, slack_app: AsyncApp) -> AsyncSlackRequestHandler:
     return AsyncSlackRequestHandler(slack_app)
+
+
+def build_socket_mode_handler(*, slack_app: AsyncApp, app_token: str) -> AsyncSocketModeHandler:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    return AsyncSocketModeHandler(slack_app, app_token=app_token, loop=loop)

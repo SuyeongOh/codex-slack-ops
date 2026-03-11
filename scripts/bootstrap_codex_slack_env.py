@@ -14,9 +14,10 @@ DEFAULT_ENV = {
     "APP_HOST": "0.0.0.0",
     "APP_PORT": "8000",
     "BASE_URL": "http://localhost:8000",
-    "DATABASE_URL": "sqlite+aiosqlite:///./approvals.db",
     "REDIS_URL": "memory://",
+    "SLACK_APP_TOKEN": "",
     "SLACK_SIGNING_SECRET": "REPLACE_WITH_SLACK_SIGNING_SECRET",
+    "SLACK_USE_SOCKET_MODE": "false",
     "SLACK_DEFAULT_CHANNEL_ID": "<approval-channel-id>",
     "SLACK_ALLOWED_APPROVER_IDS": "<comma-separated-slack-user-ids>",
     "APPROVAL_TTL_SECONDS": "600",
@@ -33,7 +34,9 @@ ENV_ORDER = [
     "DATABASE_URL",
     "REDIS_URL",
     "SLACK_BOT_TOKEN",
+    "SLACK_APP_TOKEN",
     "SLACK_SIGNING_SECRET",
+    "SLACK_USE_SOCKET_MODE",
     "SLACK_TEAM_ID",
     "SLACK_ALLOWED_APPROVER_IDS",
     "SLACK_DEFAULT_CHANNEL_ID",
@@ -103,11 +106,17 @@ def extract_slack_env(config_path: Path) -> Dict[str, str]:
     return slack_env
 
 
-def build_env(existing: Dict[str, str], slack_env: Dict[str, str], *, force: bool) -> Dict[str, str]:
+def default_database_url(output_path: Path) -> str:
+    database_path = (output_path.parent / "approvals.db").resolve()
+    return f"sqlite+aiosqlite:///{database_path.as_posix()}"
+
+
+def build_env(existing: Dict[str, str], slack_env: Dict[str, str], *, force: bool, output_path: Path) -> Dict[str, str]:
     values = {} if force else dict(existing)
 
     for key, value in DEFAULT_ENV.items():
         values.setdefault(key, value)
+    values.setdefault("DATABASE_URL", default_database_url(output_path))
 
     values["SLACK_BOT_TOKEN"] = slack_env["SLACK_BOT_TOKEN"]
     values["SLACK_TEAM_ID"] = slack_env["SLACK_TEAM_ID"]
@@ -132,7 +141,7 @@ def main() -> int:
     try:
         slack_env = extract_slack_env(config_path)
         existing_env = load_existing_env(output_path)
-        values = build_env(existing_env, slack_env, force=args.force)
+        values = build_env(existing_env, slack_env, force=args.force, output_path=output_path)
         write_env(output_path, values)
     except Exception as exc:
         print(f"bootstrap failed: {exc}", file=sys.stderr)
