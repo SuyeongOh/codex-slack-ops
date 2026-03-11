@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="${CODEX_SLACK_APP_DIR:-$HOME/codex-slack-approvals}"
+ENV_FILE="${APP_DIR}/.env"
+SERVICE_BIN="${CODEX_SLACK_SERVICE_BIN:-$HOME/bin/codex-slack-service}"
+CODEX_BIN="${CODEX_BIN:-$(command -v codex 2>/dev/null || true)}"
+
+if [[ ! -x "${CODEX_BIN}" ]]; then
+  echo "codex-slack: codex binary not found at ${CODEX_BIN}" >&2
+  exit 1
+fi
+
+if [[ ! -f "${ENV_FILE}" ]]; then
+  echo "codex-slack: missing env file ${ENV_FILE}" >&2
+  echo "Run: python ${APP_DIR}/scripts/bootstrap_codex_slack_env.py" >&2
+  exit 1
+fi
+
+set -a
+source "${ENV_FILE}"
+set +a
+
+export APPROVAL_BASE_URL="${APPROVAL_BASE_URL:-${BASE_URL:-http://127.0.0.1:${APP_PORT:-8000}}}"
+export INTERNAL_API_TOKEN
+export SLACK_DEFAULT_CHANNEL_ID
+export SLACK_ALLOWED_APPROVER_IDS
+export CODEX_SLACK_RUNNER="${APP_DIR}/scripts/approval_runner.py"
+export CODEX_SLACK_APPROVALS="1"
+
+if [[ "${SLACK_SIGNING_SECRET:-}" == "REPLACE_WITH_SLACK_SIGNING_SECRET" || -z "${SLACK_SIGNING_SECRET:-}" ]]; then
+  echo "codex-slack: warning: SLACK_SIGNING_SECRET is not configured; Slack buttons will not work." >&2
+fi
+
+if [[ -x "${SERVICE_BIN}" ]] && ! "${SERVICE_BIN}" status --quiet >/dev/null 2>&1; then
+  echo "codex-slack: approval service is not running, starting it now..." >&2
+  "${SERVICE_BIN}" start >/dev/null
+fi
+
+exec "${CODEX_BIN}" "$@"

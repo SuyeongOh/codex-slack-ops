@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+APP_DIR="${CODEX_SLACK_APP_DIR:-$HOME/codex-slack-approvals}"
+ENV_FILE="${APP_DIR}/.env"
+PID_FILE="${APP_DIR}/.approval-service.pid"
+LOG_FILE="${APP_DIR}/approval-service.log"
+APP_HOST_DEFAULT="0.0.0.0"
+APP_PORT_DEFAULT="8000"
+
+usage() {
+  cat <<'EOF'
+Usage: codex-slack-service <start|stop|restart|status|logs> [--quiet]
+EOF
+}
+
+load_env() {
+  if [[ -f "${ENV_FILE}" ]]; then
+    set -a
+    source "${ENV_FILE}"
+    set +a
+  fi
+}
+
+service_url() {
+  local host="${APP_HOST:-${APP_HOST_DEFAULT}}"
+  local port="${APP_PORT:-${APP_PORT_DEFAULT}}"
+  if [[ "${host}" == "0.0.0.0" ]]; then
+    host="127.0.0.1"
+  fi
+  printf 'http://%s:%s' "${host}" "${port}"
+}
+
+healthcheck() {
+  local url
+  url="$(service_url)"
+  python - "${url}/healthz" <<'PY' >/dev/null 2>&1
+import sys
+import urllib.request
+
+try:
+    with urllib.request.urlopen(sys.argv[1], timeout=2) as response:
+        sys.exit(0 if response.status == 200 else 1)
+except Exception:
+    sys.exit(1)
+PY
+}
+
+managed_pid_running() {
+  [[ -f "${PID_FILE}" ]] || return 1
+  local pid
+  pid="$(cat "${PID_FILE}")"
+  [[ -n "${pid}" ]] || return 1
+  kill -0 "${pid}" 2>/dev/null
+}
+
+start_service() {
+  load_env
+
+  if healthcheck; then
+    echo "codex-slack-service: already running at $(service_url)"
+    return 0
+  fi
+
+  if [[ ! -x "${APP_DIR}/.venv/bin/uvicorn" ]]; then
+    echo "codex-slack-service: missing ${APP_DIR}/.venv/bin/uvicorn" >&2
+    echo "Install the service first inside ${APP_DIR}/.venv." >&2
+    return 1
+  fi
+
+  mkdir -p "${APP_DIR}"
+  (
+    cd "${APP_DIR}"
+    nohup .venv/bin/uvicorn app.main:app \
+      --host "${APP_HOST:-${APP_HOST_DEFAULT}}" \
+      --port "${APP_PORT:-${APP_PORT_DEFAULT}}" \
+      >>"${LOG_FILE}" 2>&1 &
+    echo $! > "${PID_FILE}"
+  )
+
+  for _ in $(seq 1 20); do
+    sleep 1
+    if healthcheck; then
+      echo "codex-slack-service: started at $(service_url)"
+      return 0
+    fi
+  done
+
+  echo "codex-slack-service: failed to start, check ${LOG_FILE}" >&2
+  return 1
+}
+
+stop_service() {
+  if managed_pid_running; then
+    local pid
+    pid="$(cat "${PID_FILE}")"
+    kill "${pid}" 2>/dev/null || true
+    for _ in $(seq 1 10); do
+      sleep 1
+      if ! kill -0 "${pid}" 2>/dev/null; then
+        rm -f "${PID_FILE}"
+        echo "codex-slack-service: stopped"
+        return 0
+      fi
+    done
+    kill -9 "${pid}" 2>/dev/null || true
+    rm -f "${PID_FILE}"
+    echo "codex-slack-service: stopped after force kill"
+    return 0
+  fi
+
+  if healthcheck; then
+    echo "codex-slack-service: service is running but not managed by this script" >&2
+    return 1
+  fi
+
+  echo "codex-slack-service: not running"
+  return 0
+}
+
+status_service() {
+  local quiet="${1:-false}"
+  if healthcheck; then
+    if [[ "${quiet}" != "true" ]]; then
+      echo "codex-slack-service: running at $(service_url)"
+    fi
+    return 0
+  fi
+
+  if [[ "${quiet}" != "true" ]]; then
+    echo "codex-slack-service: stopped"
+  fi
+  return 1
+}
+
+logs_service() {
+  touch "${LOG_FILE}"
+  tail -n 80 "${LOG_FILE}"
+}
+
+main() {
+  local command="${1:-}"
+  local quiet="false"
+
+  if [[ "${2:-}" == "--quiet" || "${1:-}" == "--quiet" ]]; then
+    quiet="true"
+  fi
+
+  case "${command}" in
+    start)
+      start_service
+      ;;
+    stop)
+      stop_service
+      ;;
+    restart)
+      stop_service || true
+      start_service
+      ;;
+    status)
+      status_service "${quiet}"
+      ;;
+    logs)
+      logs_service
+      ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"
