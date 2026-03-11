@@ -5,6 +5,7 @@ APP_DIR="${CODEX_SLACK_APP_DIR:-$HOME/codex-slack-approvals}"
 ENV_FILE="${APP_DIR}/.env"
 PID_FILE="${APP_DIR}/.approval-service.pid"
 LOG_FILE="${APP_DIR}/approval-service.log"
+LOCK_FILE="${APP_DIR}/.approval-service.lock"
 APP_HOST_DEFAULT="0.0.0.0"
 APP_PORT_DEFAULT="8000"
 
@@ -54,8 +55,15 @@ managed_pid_running() {
   kill -0 "${pid}" 2>/dev/null
 }
 
+clear_stale_pid_file() {
+  if [[ -f "${PID_FILE}" ]] && ! managed_pid_running; then
+    rm -f "${PID_FILE}"
+  fi
+}
+
 start_service() {
   load_env
+  clear_stale_pid_file
 
   if healthcheck; then
     echo "codex-slack-service: already running at $(service_url)"
@@ -69,28 +77,38 @@ start_service() {
   fi
 
   mkdir -p "${APP_DIR}"
+  local pid
   (
     cd "${APP_DIR}"
     nohup .venv/bin/uvicorn app.main:app \
       --host "${APP_HOST:-${APP_HOST_DEFAULT}}" \
       --port "${APP_PORT:-${APP_PORT_DEFAULT}}" \
       >>"${LOG_FILE}" 2>&1 &
-    echo $! > "${PID_FILE}"
-  )
+    echo $!
+  ) > "${APP_DIR}/.approval-service.pid.tmp"
+  pid="$(cat "${APP_DIR}/.approval-service.pid.tmp")"
+  rm -f "${APP_DIR}/.approval-service.pid.tmp"
 
   for _ in $(seq 1 20); do
     sleep 1
     if healthcheck; then
+      if kill -0 "${pid}" 2>/dev/null; then
+        echo "${pid}" > "${PID_FILE}"
+      fi
       echo "codex-slack-service: started at $(service_url)"
       return 0
     fi
   done
 
+  if kill -0 "${pid}" 2>/dev/null; then
+    kill "${pid}" 2>/dev/null || true
+  fi
   echo "codex-slack-service: failed to start, check ${LOG_FILE}" >&2
   return 1
 }
 
 stop_service() {
+  clear_stale_pid_file
   if managed_pid_running; then
     local pid
     pid="$(cat "${PID_FILE}")"
@@ -120,6 +138,7 @@ stop_service() {
 
 status_service() {
   local quiet="${1:-false}"
+  clear_stale_pid_file
   if healthcheck; then
     if [[ "${quiet}" != "true" ]]; then
       echo "codex-slack-service: running at $(service_url)"
@@ -145,6 +164,10 @@ main() {
   if [[ "${2:-}" == "--quiet" || "${1:-}" == "--quiet" ]]; then
     quiet="true"
   fi
+
+  mkdir -p "${APP_DIR}"
+  exec 9>"${LOCK_FILE}"
+  flock 9
 
   case "${command}" in
     start)

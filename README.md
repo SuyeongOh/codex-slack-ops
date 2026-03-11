@@ -1,5 +1,7 @@
 # Codex Slack Approvals
 
+Self-hosted Slack approval workflow for Codex side-effecting shell operations.
+
 `FastAPI + Slack Bolt + Postgres + Redis` 기반의 승인 오케스트레이터입니다. Codex 또는 별도 실행기가 제안한 명령을 즉시 실행하지 않고, Slack 버튼 승인 후에만 진행하도록 앞단에서 제어합니다.
 
 ## 구성 요소
