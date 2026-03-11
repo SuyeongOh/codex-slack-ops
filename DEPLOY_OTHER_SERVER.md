@@ -271,6 +271,8 @@ target server 예시:
 
 ```bash
 export PATH=~/bin:$PATH
+alias codex='codex-slack'
+alias codex-plain='<codex-bin>'
 alias cslack='codex-slack'
 alias cslacksvc='codex-slack-service'
 ```

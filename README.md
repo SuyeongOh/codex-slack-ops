@@ -113,6 +113,15 @@ python scripts/approval_runner.py \
 - 실행 결과를 서비스에 다시 보고
 - runner stdout에는 `approval created`, `approval status`, `execution status`, `execution exit_code` 같은 lifecycle marker가 출력됩니다
 
+권장 shell alias:
+
+```bash
+alias codex='codex-slack'
+alias codex-plain='/path/to/real/codex'
+```
+
+이렇게 두면 기본 `codex`는 Slack approval workflow를 타고, 예외적으로만 `codex-plain`으로 built-in flow를 사용할 수 있습니다.
+
 ## 승인 API 예시
 
 ```bash
