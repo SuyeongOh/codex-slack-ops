@@ -169,11 +169,21 @@ python scripts/approval_runner.py \
 권장 shell alias:
 
 ```bash
+export CODEX_SLACK_APP_DIR=/home/<user>/codex-slack-ops
 alias codex='codex-slack'
 alias codex-plain='/path/to/real/codex'
+alias cslack='codex-slack'
+alias cslacksvc='codex-slack-service'
 ```
 
-이렇게 두면 기본 `codex`는 Slack approval workflow를 타고, 예외적으로만 `codex-plain`으로 built-in flow를 사용할 수 있습니다. wrapper default는 git checkout을 우선 사용하므로, repo를 최신으로 유지하면 runtime도 같은 기준으로 따라갑니다.
+이렇게 두면 기본 `codex`는 Slack approval workflow를 타고, 예외적으로만 `codex-plain`으로 built-in flow를 사용할 수 있습니다. `CODEX_SLACK_APP_DIR`까지 고정하면 wrapper/service도 항상 같은 git checkout을 runtime root로 사용합니다.
+
+권장 Codex config 방향:
+
+- shell entrypoint는 `codex-slack`
+- active approval runtime root는 `/home/<user>/codex-slack-ops`
+- `~/.codex/config.toml`의 `developer_instructions`는 side-effecting command를 `CODEX_SLACK_RUNNER`로 보내도록 유지
+- 기존에 떠 있던 Codex session은 설정 변경 후 재시작
 
 ## 승인 API 예시
 

@@ -234,6 +234,8 @@ curl http://127.0.0.1:8000/healthz
 
 핵심 정책:
 
+- shell entrypoint는 `codex-slack`
+- active Slack approval runtime root는 `<approval-app-dir>`
 - `APPROVAL_BASE_URL`와 `INTERNAL_API_TOKEN`이 있으면
   - built-in approval prompt 대신
   - `approval_runner.py`를 우선 사용
@@ -289,6 +291,7 @@ target server 예시:
 
 ```bash
 export PATH=~/bin:$PATH
+export CODEX_SLACK_APP_DIR=<approval-app-dir>
 alias codex='codex-slack'
 alias codex-plain='<codex-bin>'
 alias cslack='codex-slack'
@@ -300,6 +303,8 @@ alias cslacksvc='codex-slack-service'
 ```bash
 source ~/.bashrc
 ```
+
+기존에 떠 있던 Codex session은 새 env를 자동으로 받지 않으므로, 변경 후에는 재시작하는 것이 안전합니다.
 
 ## 11. 실사용 방식
 
